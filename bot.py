@@ -4,7 +4,8 @@ import os
 from dataclasses import dataclass
 from typing import Dict
 import re
-from openai import OpenAI
+from g4f.client import Client
+
 
 load_dotenv()
 
@@ -19,7 +20,7 @@ if not API_KEY:
     raise ValueError(
             "No API key found. Please set your OPENAI_API_KEY in the .env file."
         )
-MODEL = "gpt-4"
+MODEL = "gpt-3.5-turbo"
 
 LANG = "English"  # language by default
 
@@ -67,6 +68,25 @@ class User:
 
 users: Dict[User_id, User] = {}  # dictionary of users
 
+client = Client()
+
+
+def translate(text:str, dist_lang: str, source_lang: str = 'English') -> str:
+    '''
+    Translate using openAI from source_lang into dist_lang
+    :param text:
+    :param dist_lang:
+    :param source_lang:
+    :return: translated text
+    '''
+    text = f"Translate the following text from {source_lang} into {dist_lang}: {text}."\
+           " Give only translation in your reply."
+    prompt = [{'role':'user', 'content': text}]
+    response = client.chat.completions.create(model=MODEL, messages=prompt)
+    print(text, response.choices[0].message.content)
+    return response.choices[0].message.content
+
+
 @bot.message_handler(commands=['start'])
 def start_bot(message: telebot.types.Message):
     user_id = message.from_user.id
@@ -74,9 +94,13 @@ def start_bot(message: telebot.types.Message):
     user_name = message.from_user.first_name
     if message.from_user.last_name:
         user_name = ' '.join([user_name, message.from_user.last_name])
-    users[user_id] = User(user_id=user_id, chat_id=chat_id, name=user_name, language=LANG)
+    if user_id not in users.keys():
+        users[user_id] = User(user_id=user_id, chat_id=chat_id, name=user_name, language=LANG)
     start_message = f'{user_name}, this chatbot powered by openAI may tell about our products in any language of your choice.'\
                     ' Use commands to change language and to communicate with me.'
+    if users[user_id].language != 'English':
+        start_message = translate(' Use commands to change language and to communicate with me.',
+                                  users[user_id].language)
     start_message = escape(start_message)
     bot.send_message(chat_id=chat_id, text=start_message)
 
