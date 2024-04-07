@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 import re
-from g4f.client import Client
+import openai
 import csv
 
 contracts_csv_filename = "contracts_list.csv"
@@ -58,7 +58,7 @@ def escape(text: str) -> str:
 
     :return: str - string with escaped special characters
     """
-    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    escape_chars = r'_[]()~`>#+-=|{}.!'
     return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
 # alias for InlineKeyboardButton object
@@ -69,6 +69,16 @@ kb = telebot.types.InlineKeyboardMarkup
 
 User_id = int
 
+form_questions = {'project': 'Чем вы занимаетесь? Расскажите о своей компании. Какое основное преимущество?'\
+                            ' Что отличает вас от конкурентов?',
+                 'task': 'Какую задачу вы хотите решить? Чего хотите достичь в ближайшем будущем?'\
+                         ' Что мешает решению в настоящий момент?',
+                 'restrictions': 'Какие у вас ограничения? В какой срок вы хотите видеть решение вашей задачи?'\
+                                 ' Каков ваш бюджет?',
+                 'contact_info': 'Как мы сможем с вами связаться? Оставьте свой телефон или эл.почту.'
+                 }
+
+
 @dataclass
 class User:
    user_id: int
@@ -76,6 +86,8 @@ class User:
    name: str
    language: str = "English"
    contract_number: Optional[str] = None
+   form: Optional[Dict[str, str]] = None
+
 
 users: Dict[User_id, User] = {}  # dictionary of users
 
@@ -93,13 +105,16 @@ questions: Dict[str, Question] = {
     "ContractNum": Question(text="Пожалуйста, сообщите номер вашего договора с XPAGE",
                             buttons=None),
     "NewUser":     Question(text="Чем я могу вам помочь?",
-                            buttons=[btn('Направить шаблон договора', callback_data="Q02_contract"),
+                            buttons=[btn('Подобрать решение для ваших задач', callback_data='Q02_solution'),
+                                     btn('Направить шаблон договора', callback_data="Q02_contract"),
                                      btn('Рассказать о компании XPAGE', callback_data="Q02_about"),
-                                     btn('Примеры наших работ', callback_data="Q02_examples")])
+                                     btn('Примеры наших работ', callback_data="Q02_examples"),
+                                    ]
+                            )
 
 }
 
-client = Client()
+client = openai.Client(api_key=API_KEY)
 
 
 def translate(text:str, dist_lang: str, source_lang: str = 'Russian') -> str:
@@ -120,6 +135,22 @@ def translate(text:str, dist_lang: str, source_lang: str = 'Russian') -> str:
         result = text
     return result
 
+def advice(text:str) -> str:
+    '''
+    Translate using openAI from source_lang into dist_lang
+    :param text:
+    :return: advice
+    '''
+    text = f"Какие цифровые решения помогут решить следующую задачу: {text}."
+    prompt = [{'role':'user', 'content': text}]
+    try:
+        response = client.chat.completions.create(model=MODEL, messages=prompt)
+        result = response.choices[0].message.content
+    except Exception as e:
+        print(e)
+        result = "Проблема с работой ИИ"
+    return result
+
 
 @bot.message_handler(commands=['start'])
 def start_bot(message: telebot.types.Message):
@@ -138,6 +169,22 @@ def start_bot(message: telebot.types.Message):
     start_message = escape(start_message)
     msg = bot.send_message(chat_id=chat_id, text=start_message)
     getting_know(msg)
+
+@bot.message_handler(commands=['assistant'])
+def assistent(message: telebot.types.Message):
+    chat_id = message.chat.id
+    text = escape("Вы можете обсудить вашу задачу с нашим виртуальным ассистентом: t.me/Hakaton74XPage_bot")
+    bot.send_message(chat_id=chat_id, text=text, parse_mode='MarkdownV2')
+
+@bot.message_handler(commands=['description'])
+def description(message: telebot.types.Message):
+    chat_id = message.chat.id
+    text = text = "Наша компания *XPage* специализируется на разработке корпоративных сайтов,"\
+               " мобильных приложений и цифровых услуг. Наша область экспертизы - создание профессиональных"\
+               " продуктов в сфере информационных технологий для бизнеса в области спорта, промышленности и "\
+               " интернет-магазинов."
+    text = escape(text)
+    bot.send_message(chat_id=chat_id, text=text, parse_mode='MarkdownV2')
 
 
 def getting_know(message: telebot.types.Message):
@@ -214,6 +261,70 @@ def info_for_new_user(query: telebot.types.CallbackQuery):
                "федеральной сети ломбардов Фианит-Ломбард, фабрики для производства гофраупаковки и множество других."
         text = escape(text)
         bot.send_message(chat_id=chat_id, text=text)
+    if result == "solution":
+        text = "Чтобы ваше общение с менеджером было продуктивнее, пожалуйста, ответьте на несколько вопросов."
+        text = escape(text)
+        bot.send_message(chat_id=chat_id, text=text)
+        text = escape(form_questions['project'])
+        msg = bot.send_message(chat_id=chat_id, text=text)
+        bot.register_next_step_handler(msg, form_task)
+
+
+def form_task(message: telebot.types.Message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    message_id = message.id
+    project = message.text
+    users[user_id].form = {'project': project}
+    # bot.delete_message(chat_id=chat_id, message_id=message_id)
+    text = escape(form_questions['task'])
+    msg = bot.send_message(chat_id=chat_id, text=text)
+    bot.register_next_step_handler(msg, form_restrictions)
+
+
+def form_restrictions(message: telebot.types.Message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    message_id = message.id
+    task = message.text
+    users[user_id].form['task'] = task
+    # bot.delete_message(chat_id=chat_id, message_id=message_id)
+    text = escape(form_questions['restrictions'])
+    msg = bot.send_message(chat_id=chat_id, text=text)
+    bot.register_next_step_handler(msg, form_contact_info)
+
+
+def form_contact_info(message: telebot.types.Message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    message_id = message.id
+    restrictions = message.text
+    users[user_id].form['restrictions'] = restrictions
+    # bot.delete_message(chat_id=chat_id, message_id=message_id)
+    text = escape(form_questions['contact_info'])
+    msg = bot.send_message(chat_id=chat_id, text=text)
+    bot.register_next_step_handler(msg, form_final)
+
+
+def form_final(message: telebot.types.Message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    message_id = message.id
+    contact_info = message.text
+    users[user_id].form['contact_info'] = contact_info
+    # bot.delete_message(chat_id=chat_id, message_id=message_id)
+    text = 'Заполненная вами форма будет отправлена менеджерам. С вами свяжутся в ближайшее время.\n'
+    project_description = ''
+    for field, content in users[user_id].form.items():
+        line = f'*{field}*: {content} \n'
+        project_description += line
+    text = escape(text + project_description)
+    bot.send_message(chat_id=chat_id, text=text, parse_mode='MarkdownV2')
+    text = advice(project_description)
+    text = escape(text)
+    bot.send_message(chat_id=chat_id, text=text, parse_mode='MarkdownV2')
+
+
 
 @bot.message_handler(commands=['lang'])
 def select_language(message: telebot.types.Message):
