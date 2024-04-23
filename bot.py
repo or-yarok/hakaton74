@@ -4,8 +4,10 @@ import os
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 import re
-import openai
+# import openai
+from yandexgptlite import YandexGPTLite
 import csv
+from enum import Enum
 
 contracts_csv_filename = "contracts_list.csv"
 
@@ -23,21 +25,30 @@ if TOKEN is None:
     raise ValueError({'TOKEN': TOKEN})
 BOT_NAME = "@hakaton74_bot"
 
-API_KEY = os.getenv("OPENAI_API_KEY")
-if not API_KEY:
+YANDEX_API_KEY = os.getenv("YANDEX_API_KEY")
+if not YANDEX_API_KEY:
     raise ValueError(
-            "No API key found. Please set your OPENAI_API_KEY in the .env file."
+            "No API key found. Please set your YANDEX_API_KEY in the .env file."
         )
-MODEL = "gpt-3.5-turbo"
 
-LANG = "Russian"  # language by default
+YANDEX_FOLDER_ID = os.getenv("YANDEX_FOLDER_ID")
+if not YANDEX_API_KEY:
+    raise ValueError(
+            "No FOLDER_ID found. Please set your YANDEX_FOLDER_ID in the .env file."
+        )
+# MODEL = "lite"
 
-LANGUAGES_LIST = (
-    'English',
-    'Russian',
-    'Georgian',
-    'Chinese',
-)
+
+class LANGUAGES(Enum):
+    ENG = 'English'
+    RUS = 'Russian'
+    GEO = 'Georgian'
+    CHI = 'Chinese'
+
+
+DEFAULT_LANG = LANGUAGES.RUS.value  # language by default
+
+LANGUAGES_LIST = tuple(lang.value for lang in LANGUAGES)
 
 # language selection keyboard
 reply_kb = telebot.types.ReplyKeyboardMarkup(one_time_keyboard=True,
@@ -114,10 +125,10 @@ questions: Dict[str, Question] = {
 
 }
 
-client = openai.Client(api_key=API_KEY)
+client = YandexGPTLite(YANDEX_FOLDER_ID, YANDEX_API_KEY)
 
 
-def translate(text:str, dist_lang: str, source_lang: str = 'Russian') -> str:
+def translate(text:str, dist_lang: str, source_lang: str = DEFAULT_LANG) -> str:
     '''
     Translate using openAI from source_lang into dist_lang
     :param text:
@@ -125,12 +136,12 @@ def translate(text:str, dist_lang: str, source_lang: str = 'Russian') -> str:
     :param source_lang:
     :return: translated text
     '''
-    text = f"Translate the following text from {source_lang} into {dist_lang}: {text}."\
+    system_prompt = f"Translate the following text from {source_lang} into {dist_lang}."\
            " Give only translation in your reply."
-    prompt = [{'role':'user', 'content': text}]
+    temperature = '0.3'
+    max_tokens=500
     try:
-        response = client.chat.completions.create(model=MODEL, messages=prompt)
-        result = response.choices[0].message.content
+        result = client.create_completion(text, temperature, system_prompt=system_prompt, max_tokens=max_tokens)
     except:
         result = text
     return result
@@ -142,13 +153,45 @@ def advice(text:str) -> str:
     :return: advice
     '''
     text = f"Какие цифровые решения помогут решить следующую задачу: {text}."
-    prompt = [{'role':'user', 'content': text}]
+    system_prompt = "Дай ответ как консультант IT-компании, которая предлагает цифровые решения "\
+                    "для решения бизнес-задач (создание сайтов, мобильных приложений, SEO-оптимизация, машинное " \
+                    "обучение). "
+    max_tokens = 5000
+    temperature = '0.4'
     try:
-        response = client.chat.completions.create(model=MODEL, messages=prompt)
-        result = response.choices[0].message.content
+        result = client.create_completion(text, temperature, system_prompt=system_prompt, max_tokens=max_tokens)
     except Exception as e:
         print(e)
         result = "Проблема с работой ИИ"
+    return result
+
+
+def text_processing(text: str,
+                    lang: str = 'Russian',
+                    translation_required: bool = True,
+                    debug: bool = False) -> str:
+    '''
+    Text processing: translation if needed and escaping for MarkdownV2
+    :param text:
+    :param lang:
+    :param translation_required:
+    :param debug:
+    :return: translated and escaped text
+    '''
+    if debug:
+        print(f'source text: {text}')
+    if translation_required and lang != DEFAULT_LANG:
+        try:
+            result = translate(text, lang)
+        except Exception as e:
+            result = '\n'.join([text, 'Translation is not successful'])
+            if debug:
+                print(e)
+    else:
+        result = text
+    result = escape(result)
+    if debug:
+        print(f'resulting text: {result}')
     return result
 
 
@@ -161,36 +204,39 @@ def start_bot(message: telebot.types.Message):
     if message.from_user.last_name:
         user_name = ' '.join([user_name, message.from_user.last_name])
     if user_id not in users.keys():
-        users[user_id] = User(user_id=user_id, chat_id=chat_id, name=user_name, language=LANG)
+        users[user_id] = User(user_id=user_id, chat_id=chat_id, name=user_name, language=DEFAULT_LANG)
     start_message = f'{user_name}, добрый день! Я помогу вам во взаимодействии с компанией XPAGE.'
-    if users[user_id].language != 'Russian':
-        start_message = translate(start_message,
-                                  users[user_id].language)
-    start_message = escape(start_message)
-    msg = bot.send_message(chat_id=chat_id, text=start_message)
-    getting_know(msg)
+    start_message = text_processing(start_message, users[user_id].language)
+    bot.send_message(chat_id=chat_id, text=start_message)
+    getting_know(message)
+
 
 @bot.message_handler(commands=['assistant'])
-def assistent(message: telebot.types.Message):
+def assistant(message: telebot.types.Message):
     chat_id = message.chat.id
-    text = escape("Вы можете обсудить вашу задачу с нашим виртуальным ассистентом: t.me/Hakaton74XPage_bot")
+    user_id = message.from_user.id
+    text = "Вы можете обсудить вашу задачу с нашим виртуальным ассистентом: t.me/Hakaton74XPage_bot"
+    text = text_processing(text, users[user_id].language)
     bot.send_message(chat_id=chat_id, text=text, parse_mode='MarkdownV2')
+
 
 @bot.message_handler(commands=['description'])
 def description(message: telebot.types.Message):
     chat_id = message.chat.id
-    text = text = "Наша компания *XPage* специализируется на разработке корпоративных сайтов,"\
-               " мобильных приложений и цифровых услуг. Наша область экспертизы - создание профессиональных"\
-               " продуктов в сфере информационных технологий для бизнеса в области спорта, промышленности и "\
-               " интернет-магазинов."
-    text = escape(text)
+    user_id = message.from_user.id
+    text = "Наша компания *XPage* специализируется на разработке корпоративных сайтов,"\
+           " мобильных приложений и цифровых услуг. Наша область экспертизы - создание профессиональных"\
+           " продуктов в сфере информационных технологий для бизнеса в области спорта, промышленности и "\
+           " интернет-магазинов."
+    text = text_processing(text, users[user_id].language)
     bot.send_message(chat_id=chat_id, text=text, parse_mode='MarkdownV2')
 
 
 def getting_know(message: telebot.types.Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
-    text = escape(questions['GettingKnow'].text)
+    text = questions['GettingKnow'].text
+    text = text_processing(text, users[user_id].language)
     kb_getting_know = telebot.types.InlineKeyboardMarkup(row_width=2)
     kb_getting_know.add(*questions['GettingKnow'].buttons)
     bot.send_message(chat_id=chat_id, text=text, reply_markup=kb_getting_know)
@@ -207,7 +253,8 @@ def getting_know_query(query: telebot.types.CallbackQuery):
 
 
 def ask_contract_number(user_id, chat_id):
-    text = escape(questions['ContractNum'].text)
+    text = questions['ContractNum'].text
+    text = text_processing(text, users[user_id].language)
     msg = bot.send_message(chat_id=chat_id, text=text)
     bot.register_next_step_handler(msg, get_contract_number)
 
@@ -218,23 +265,25 @@ def get_contract_number(message: telebot.types.Message):
     contract_number = message.text
     users[user_id].contract_number = contract_number
     text = f'Вы ввели номер договора: {contract_number}'
-    text = escape(text)
+    text = text_processing(text, users[user_id].language)
     bot.send_message(chat_id=chat_id, text=text)
     contract_number = contract_number.strip()
     for contract in contracts:
         if contract['num'] == contract_number:
             text = f"Статус работы по вашему договору: {contract['status']}"
-            text = escape(text)
+            text = text_processing(text, users[user_id].language)
             bot.send_message(chat_id=chat_id, text=text)
             break
     else:
-        text = escape('Проверьте, верно ли вы ввели номер договора. Я не нашёл его в моей базе данных.')
+        text = 'Проверьте, верно ли вы ввели номер договора. Я не нашёл его в моей базе данных.'
+        text = text_processing(text, users[user_id].language)
         bot.send_message(chat_id=chat_id, text=text)
 
 
 def new_user(message: telebot.types.Message, user_id):
     chat_id = message.chat.id
-    text = escape(questions['NewUser'].text)
+    text = questions['NewUser'].text
+    text = text_processing(text, users[user_id].language)
     kb_new_user = telebot.types.InlineKeyboardMarkup(row_width=1)
     kb_new_user.add(*questions['NewUser'].buttons)
     msg = bot.send_message(chat_id=chat_id, text=text, reply_markup=kb_new_user)
@@ -246,26 +295,30 @@ def info_for_new_user(query: telebot.types.CallbackQuery):
     chat_id = query.message.chat.id
     result = query.data.split('_')[1]
     if result == "contract":
+        text = 'Шаблон договора'
+        if users[user_id].language != 'Russian':
+            text = translate(text, users[user_id].language)
         bot.send_message(chat_id=chat_id,
-                         text = "<a href='https://telegra.ph/SHablon-dogovora-04-06'>Шаблон договора</a>",
+                         text = f"<a href='https://telegra.ph/SHablon-dogovora-04-06'>{text}</a>",
                          parse_mode='html')
     if result == "about":
         text = "Наша компания **XPage** специализируется на разработке корпоративных сайтов,"\
                " мобильных приложений и цифровых услуг. Наша область экспертизы - создание профессиональных"\
                " продуктов в сфере информационных технологий для бизнеса в области спорта, промышленности и "\
                " интернет-магазинов."
-        text = escape(text)
-        bot.send_message(chat_id=chat_id, text=text, parse_mode='markdown')
+        text = text_processing(text, users[user_id].language)
+        bot.send_message(chat_id=chat_id, text=text, parse_mode='MarkdownV2')
     if result == "examples":
         text = "Мы разработали корпоративные сайты для Хоккейного клуба Трактор, спортивного телеканала Старт, "\
                "федеральной сети ломбардов Фианит-Ломбард, фабрики для производства гофраупаковки и множество других."
-        text = escape(text)
-        bot.send_message(chat_id=chat_id, text=text)
+        text = text_processing(text, users[user_id].language)
+        bot.send_message(chat_id=chat_id, text=text, parse_mode='MarkdownV2')
     if result == "solution":
         text = "Чтобы ваше общение с менеджером было продуктивнее, пожалуйста, ответьте на несколько вопросов."
-        text = escape(text)
+        text = text_processing(text, users[user_id].language)
         bot.send_message(chat_id=chat_id, text=text)
-        text = escape(form_questions['project'])
+        text = form_questions['project']
+        text = text_processing(text, users[user_id].language)
         msg = bot.send_message(chat_id=chat_id, text=text)
         bot.register_next_step_handler(msg, form_task)
 
@@ -273,11 +326,12 @@ def info_for_new_user(query: telebot.types.CallbackQuery):
 def form_task(message: telebot.types.Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
-    message_id = message.id
+    # message_id = message.id
     project = message.text
     users[user_id].form = {'project': project}
     # bot.delete_message(chat_id=chat_id, message_id=message_id)
-    text = escape(form_questions['task'])
+    text = form_questions['task']
+    text = text_processing(text, users[user_id].language)
     msg = bot.send_message(chat_id=chat_id, text=text)
     bot.register_next_step_handler(msg, form_restrictions)
 
@@ -285,11 +339,12 @@ def form_task(message: telebot.types.Message):
 def form_restrictions(message: telebot.types.Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
-    message_id = message.id
+    # message_id = message.id
     task = message.text
     users[user_id].form['task'] = task
     # bot.delete_message(chat_id=chat_id, message_id=message_id)
-    text = escape(form_questions['restrictions'])
+    text = form_questions['restrictions']
+    text = text_processing(text, users[user_id].language)
     msg = bot.send_message(chat_id=chat_id, text=text)
     bot.register_next_step_handler(msg, form_contact_info)
 
@@ -297,11 +352,12 @@ def form_restrictions(message: telebot.types.Message):
 def form_contact_info(message: telebot.types.Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
-    message_id = message.id
+    # message_id = message.id
     restrictions = message.text
     users[user_id].form['restrictions'] = restrictions
     # bot.delete_message(chat_id=chat_id, message_id=message_id)
-    text = escape(form_questions['contact_info'])
+    text = form_questions['contact_info']
+    text = text_processing(text, users[user_id].language)
     msg = bot.send_message(chat_id=chat_id, text=text)
     bot.register_next_step_handler(msg, form_final)
 
@@ -309,21 +365,23 @@ def form_contact_info(message: telebot.types.Message):
 def form_final(message: telebot.types.Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
-    message_id = message.id
+    # message_id = message.id
     contact_info = message.text
     users[user_id].form['contact_info'] = contact_info
     # bot.delete_message(chat_id=chat_id, message_id=message_id)
     text = 'Заполненная вами форма будет отправлена менеджерам. С вами свяжутся в ближайшее время.\n'
+    text = text_processing(text, users[user_id].language)
     project_description = ''
+    contacts = f"*contact info*: {users[user_id].form['contact_info']}"
     for field, content in users[user_id].form.items():
         line = f'*{field}*: {content} \n'
-        project_description += line
-    text = escape(text + project_description)
+        if field != 'contact_info':
+            project_description += line
+    text = text + text_processing(project_description+contacts, translation_required= False)
     bot.send_message(chat_id=chat_id, text=text, parse_mode='MarkdownV2')
     text = advice(project_description)
     text = escape(text)
     bot.send_message(chat_id=chat_id, text=text, parse_mode='MarkdownV2')
-
 
 
 @bot.message_handler(commands=['lang'])
