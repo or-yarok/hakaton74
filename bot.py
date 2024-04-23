@@ -95,7 +95,7 @@ class User:
    user_id: int
    chat_id: int
    name: str
-   language: str = "English"
+   language: str = DEFAULT_LANG
    contract_number: Optional[str] = None
    form: Optional[Dict[str, str]] = None
 
@@ -130,7 +130,7 @@ client = YandexGPTLite(YANDEX_FOLDER_ID, YANDEX_API_KEY)
 
 def translate(text:str, dist_lang: str, source_lang: str = DEFAULT_LANG) -> str:
     '''
-    Translate using openAI from source_lang into dist_lang
+    Translate using AI from source_lang into dist_lang
     :param text:
     :param dist_lang:
     :param source_lang:
@@ -148,7 +148,7 @@ def translate(text:str, dist_lang: str, source_lang: str = DEFAULT_LANG) -> str:
 
 def advice(text:str) -> str:
     '''
-    Translate using openAI from source_lang into dist_lang
+    Send a prompt `text` to AI 
     :param text:
     :return: advice
     '''
