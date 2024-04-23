@@ -1,2 +1,2 @@
 # hakaton74
-telegram chatbot powered with openAI
+telegram chatbot powered with AI
